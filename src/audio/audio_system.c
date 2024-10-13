@@ -50,6 +50,15 @@ static struct sw_codec_config sw_codec_cfg;
 static int16_t test_tone_buf[CONFIG_AUDIO_SAMPLE_RATE_HZ / 1000];
 static size_t test_tone_size;
 
+void streamctrl_send(void const *const data, size_t size, uint8_t num_ch)
+{
+	ARG_UNUSED(data);
+	ARG_UNUSED(size);
+	ARG_UNUSED(num_ch);
+
+	LOG_WRN("Sending is not possible for broadcast sink");
+}
+
 static bool sample_rate_valid(uint32_t sample_rate_hz)
 {
 	if (sample_rate_hz == 16000 || sample_rate_hz == 24000 || sample_rate_hz == 48000) {

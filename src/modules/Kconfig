@@ -56,7 +56,7 @@ config I2S_LRCK_FREQ_HZ
 
 config I2S_CH_NUM
 	int
-	default 2
+	default 1
 	help
 	 The I2S driver itself supports both mono and stereo.
 	 Parts of the implementation are configured for only stereo.

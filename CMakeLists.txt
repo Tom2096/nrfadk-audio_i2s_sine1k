@@ -24,24 +24,8 @@ configure_file("${CMAKE_CURRENT_SOURCE_DIR}/src/utils/fw_info_app.c.in"
 # Target sources below are specific to the nRF5340 Audio DK HW
 target_sources(app PRIVATE
     ${CMAKE_BINARY_DIR}/fw_info_app.c
+    src/main.c
     )
-
-if (CONFIG_BT_BAP_BROADCAST_SINK)
-	add_subdirectory(broadcast_sink)
-endif()
-
-if (CONFIG_BT_BAP_BROADCAST_SOURCE)
-	add_subdirectory(broadcast_source)
-endif()
-
-if (CONFIG_BT_BAP_UNICAST_CLIENT)
-	add_subdirectory(unicast_client)
-endif()
-
-if (CONFIG_BT_BAP_UNICAST_SERVER)
-	add_subdirectory(unicast_server)
-endif()
-
 
 # Include application events and configuration headers
 zephyr_library_include_directories(
@@ -59,7 +43,6 @@ zephyr_library_include_directories(app PRIVATE
 
 # Application sources
 add_subdirectory(src/audio)
-add_subdirectory(src/bluetooth)
 add_subdirectory(src/drivers)
 add_subdirectory(src/modules)
 add_subdirectory(src/utils)
