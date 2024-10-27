@@ -6,6 +6,8 @@
 #include <zephyr/kernel.h>
 #include <nrfx_clock.h>
 #include <audio_i2s.h>
+#include <audio_i2s_macros.h>
+#include <zephyr/sys/ring_buffer.h>
 #include <pcm_stream_channel_modifier.h>
 #include <macros_common.h>
 #include <hw_codec.h>
@@ -16,27 +18,15 @@ LOG_MODULE_REGISTER(main, CONFIG_MAIN_LOG_LEVEL);
 
 #define CONFIG_LOGGING
 
-#define BLK_PERIOD_US 1000
-
-/* Number of audio blocks given a duration */
-#define NUM_BLKS(d) ((d) / BLK_PERIOD_US)
-/* Single audio block size in number of samples (stereo) */
-/* clang-format off */
-#define BLK_SIZE_SAMPLES(r) (((r)*BLK_PERIOD_US) / 1000000)
-
-#define NUM_BLKS_IN_FRAME      NUM_BLKS(CONFIG_AUDIO_FRAME_DURATION_US)
-#define BLK_MONO_NUM_SAMPS     BLK_SIZE_SAMPLES(CONFIG_AUDIO_SAMPLE_RATE_HZ)
-
-/* Number of octets in a single audio block */
-#define BLK_MONO_SIZE_OCTETS   (BLK_MONO_NUM_SAMPS * CONFIG_AUDIO_BIT_DEPTH_OCTETS)
-#define BLK_STEREO_SIZE_OCTETS (BLK_MONO_SIZE_OCTETS * 2)
-
 static uint8_t *tx_buf;
 static uint32_t *rx_buf;
 
-static uint8_t alt_pos = 0;
 static uint8_t sine_1000hz_16bits_mono[BLK_MONO_SIZE_OCTETS] = { 0 };
 static uint8_t sine_1000hz_16bits_stereo[BLK_STEREO_SIZE_OCTETS] = { 0 };
+
+K_SEM_DEFINE(sem_ringbuf_space_available, 1, 1);
+K_MUTEX_DEFINE(mtx_ringbuf);
+RING_BUF_DECLARE(ringbuf_audio_data, RING_BUF_SIZE);
 
 /* Alternate-buffers used when there is no active audio stream.
  * Used interchangeably by I2S.
@@ -80,20 +70,55 @@ static void alt_buffer_free_both(void)
 	alt.buf_1_in_use = false;
 }
 
-static void i2s_block_complete_callback()
+static int ringbuf_read()
 {
-	uint8_t* input_ptr;
-	
-	if (alt_pos == 0) {
-		input_ptr = sine_1000hz_16bits_stereo;
-	} else {
-		input_ptr = &(sine_1000hz_16bits_stereo[BLK_MONO_SIZE_OCTETS]);
+	size_t read_size = BLK_MONO_SIZE_OCTETS;
+
+	read_size = ring_buf_get(&ringbuf_audio_data, tx_buf, read_size);
+	if (read_size != BLK_MONO_SIZE_OCTETS) {
+		LOG_WRN("Read size (%d) not equal requested size (%d)", read_size, BLK_MONO_SIZE_OCTETS);
 	}
-	
+
+	if (ring_buf_space_get(&ringbuf_audio_data) >= RING_BUF_FILL_SIZE) {
+		k_sem_give(&sem_ringbuf_space_available);
+	}
+
+	return 0;
+}
+
+static int ringbuf_write()
+{
+	int ret;
+	uint8_t *buf;
+	size_t write_size = RING_BUF_FILL_SIZE;
+
+	/* The ringbuffer is read every 10 ms by audio datapath when SD card playback is enabled.
+	 * Timeout value should therefore not be less than 10 ms
+	 */
+	ret = k_sem_take(&sem_ringbuf_space_available, K_MSEC(20));
+	if (ret) {
+		LOG_ERR("Sem take err: %d. Skipping frame", ret);
+		return ret;
+	}
+
+	write_size = ring_buf_put_claim(&ringbuf_audio_data, &buf, write_size);
+	memcpy(buf, sine_1000hz_16bits_stereo, write_size);
+	ret = ring_buf_put_finish(&ringbuf_audio_data, write_size);
+	if (ret) {
+		LOG_ERR("Ring buf put finish err: %d", ret);
+		return ret;
+	}
+
+	return 0;
+}
+
+static void i2s_block_callback()
+{
+	ringbuf_read();
+
 	/*** Data exchange ***/
-	audio_i2s_set_next_buf(input_ptr, rx_buf);
-	
-	alt_pos = 1 - alt_pos;
+	audio_i2s_set_next_buf(tx_buf, rx_buf);
+
 }
 
 static int hfclock_config_and_start(void)
@@ -129,7 +154,7 @@ int main(void)
 	ret = hfclock_config_and_start();
 	ERR_CHK(ret);
 
-	audio_i2s_blk_comp_cb_register(i2s_block_complete_callback);
+	audio_i2s_blk_comp_cb_register(i2s_block_callback);
 	audio_i2s_init();
 
 	ret = hw_codec_init();
@@ -178,9 +203,8 @@ int main(void)
 		LOG_ERR("Failed to generate dual tone");
 	}
 
-	for (size_t i = 0; i < BLK_STEREO_SIZE_OCTETS / 2; ++i) {
-		printk("%d\n", ((int16_t *)sine_1000hz_16bits_stereo)[i]);
-	}
+	memset(tx_buf, 0, BLK_MONO_SIZE_OCTETS);
+	ringbuf_write();
 
 	ret = hw_codec_default_conf_enable();
 	ERR_CHK(ret);
@@ -188,7 +212,18 @@ int main(void)
 	// Need to run this manually once to trigger the callback
 	audio_i2s_set_next_buf(tx_buf, rx_buf);
 	
-	k_msleep(5000);
+	int64_t start_time = k_uptime_get();
+	while (true) {
+
+		int64_t current_time = k_uptime_get();
+		int64_t elapsed_time_ms = current_time - start_time;
+		
+        if (elapsed_time_ms >= 5000) { // Check if 5000ms has passed
+            break; // Exit the loop after 5 seconds
+        }
+
+		ringbuf_write();
+	}
 
 	ret = hw_codec_soft_reset();
 	ERR_CHK(ret);
