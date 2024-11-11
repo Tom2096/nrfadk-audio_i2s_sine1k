@@ -70,22 +70,6 @@ static void alt_buffer_free_both(void)
 	alt.buf_1_in_use = false;
 }
 
-static int ringbuf_read()
-{
-	size_t read_size = BLK_MONO_SIZE_OCTETS;
-
-	read_size = ring_buf_get(&ringbuf_audio_data, tx_buf, read_size);
-	if (read_size != BLK_MONO_SIZE_OCTETS) {
-		LOG_WRN("Read size (%d) not equal requested size (%d)", read_size, BLK_MONO_SIZE_OCTETS);
-	}
-
-	if (ring_buf_space_get(&ringbuf_audio_data) >= RING_BUF_FILL_SIZE) {
-		k_sem_give(&sem_ringbuf_space_available);
-	}
-
-	return 0;
-}
-
 static int ringbuf_write()
 {
 	int ret;
@@ -112,13 +96,23 @@ static int ringbuf_write()
 	return 0;
 }
 
-static void i2s_block_callback()
+static void ringbuf_read()
 {
-	ringbuf_read();
+	size_t read_size = BLK_MONO_SIZE_OCTETS;
+
+	read_size = ring_buf_get_claim(&ringbuf_audio_data, &tx_buf, read_size);
+	if (read_size != BLK_MONO_SIZE_OCTETS) {
+		LOG_WRN("Read size (%d) not equal requested size (%d)", read_size, BLK_MONO_SIZE_OCTETS);
+	}
 
 	/*** Data exchange ***/
 	audio_i2s_set_next_buf(tx_buf, rx_buf);
 
+	ring_buf_get_finish(&ringbuf_audio_data, read_size);
+
+	if (ring_buf_space_get(&ringbuf_audio_data) >= RING_BUF_FILL_SIZE) {
+		k_sem_give(&sem_ringbuf_space_available);
+	}
 }
 
 static int hfclock_config_and_start(void)
@@ -154,7 +148,7 @@ int main(void)
 	ret = hfclock_config_and_start();
 	ERR_CHK(ret);
 
-	audio_i2s_blk_comp_cb_register(i2s_block_callback);
+	audio_i2s_blk_comp_cb_register(ringbuf_read);
 	audio_i2s_init();
 
 	ret = hw_codec_init();
